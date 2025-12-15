@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile
 from faster_whisper import WhisperModel
 import requests
 import os
+# Railway deploy fix
 
 app = FastAPI()
 
