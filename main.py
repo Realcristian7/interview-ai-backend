@@ -1,44 +1,57 @@
-from fastapi import FastAPI, UploadFile
-from faster_whisper import WhisperModel
-import requests
 import os
-# Railway deploy fix
+import tempfile
+from fastapi import FastAPI, UploadFile, File
+from faster_whisper import WhisperModel
+import uvicorn
 
+# -----------------------------
+# App initialization
+# -----------------------------
 app = FastAPI()
 
-model = WhisperModel("base", compute_type="int8")
+# Load Whisper model (CPU-safe for Railway free tier)
+model = WhisperModel(
+    "base",
+    device="cpu",
+    compute_type="int8"
+)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+# -----------------------------
+# Health check (IMPORTANT)
+# -----------------------------
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Interview AI backend is running"}
 
+# -----------------------------
+# Audio interview endpoint
+# -----------------------------
 @app.post("/interview")
-async def interview(audio: UploadFile):
-    temp_path = f"/tmp/{audio.filename}"
+async def interview(audio: UploadFile = File(...)):
+    # Save uploaded audio to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(await audio.read())
+        tmp_path = tmp.name
 
-    with open(temp_path, "wb") as f:
-        f.write(await audio.read())
+    try:
+        segments, info = model.transcribe(tmp_path)
+        text = " ".join(segment.text for segment in segments)
 
-    segments, _ = model.transcribe(temp_path)
-    question = " ".join([s.text for s in segments])
+        return {
+            "language": info.language,
+            "transcript": text
+        }
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    finally:
+        os.remove(tmp_path)
 
-    payload = {
-        "model": "llama3-70b-8192",
-        "messages": [
-            {"role": "system", "content": "You answer interview questions clearly and briefly."},
-            {"role": "user", "content": question}
-        ]
-    }
-
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers,
-        json=payload
+# -----------------------------
+# Railway / Production entrypoint
+# -----------------------------
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port
     )
-
-    answer = response.json()["choices"][0]["message"]["content"]
-
-    return {"question": question, "answer": answer}
